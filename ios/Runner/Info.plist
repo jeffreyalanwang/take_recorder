@@ -29,6 +29,10 @@
 	<key>UIMainStoryboardFile</key>
 	<string>Main</string>
 	<key>UISupportedInterfaceOrientations</key>
+	<key>NSCameraUsageDescription</key>
+	<string>This app uses your camera to record videos as part of its core functionality.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>This app uses your microphone to record videos as part of its core functionality.</string>
 	<array>
 		<string>UIInterfaceOrientationPortrait</string>
 		<string>UIInterfaceOrientationLandscapeLeft</string>

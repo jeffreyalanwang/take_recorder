@@ -100,7 +100,7 @@ class MyApp extends StatelessWidget {
                         return const SampleItemDetailsView();
                       case SampleItemListView.routeName:
                       default:
-                        return const TakeStudioView(excerptID: 'placeholder',);
+                        return TakeStudioView(excerptID: 'placeholder',);
                     }
                   },
                 );

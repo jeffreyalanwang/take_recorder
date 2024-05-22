@@ -1,24 +1,26 @@
 
+import 'dart:async';
 import 'dart:io';
 import 'dart:typed_data';
+import 'package:flutter/material.dart';
 import 'package:cross_file/cross_file.dart';
+import 'package:flutter/widgets.dart';
 import 'package:path_provider/path_provider.dart';
-import 'package:uuid/uuid.dart';
 import 'package:path/path.dart' as p;
 
-import 'package:flutter/material.dart';
 import 'package:take_recorder/src/takes/excerpt_takes.dart';
 import 'package:take_recorder/src/take_studio/play_take_widget.dart';
 import 'package:take_recorder/src/take_studio/record_widget.dart';
 
 // Record new takes, view old ones, mark for deletion, and mark favorite
+// TODO would be more efficient to rewrite as a stateless widget with a seperate state object
 class TakeStudioView extends StatefulWidget {
   TakeStudioView({super.key, required this.excerptID}) {
     // create a folder to save videos inside
     getApplicationDocumentsDirectory()
     ..then((Directory appDir) {
       final path = p.join(appDir.path, excerptID);
-      videoSaveDir = Directory(path); // this also creates the folder
+      videoSaveDir = Directory(path)..create(); // this also creates the folder
     })
     ..catchError((error, stackTrace) {
       throw Exception('Error creating save directory: $error');
@@ -34,7 +36,8 @@ class TakeStudioView extends StatefulWidget {
 
 class _TakeStudioViewState extends State<TakeStudioView> {
 
-  final List<Take?> takes = [];
+  final List<Future<Take>> takeFutures = [];
+  final List<Take> takes = [];
   int currVideo = -1;
 
   String newVideoPath() {
@@ -42,38 +45,41 @@ class _TakeStudioViewState extends State<TakeStudioView> {
     return p.join(widget.videoSaveDir.path, filename);
   }
 
+  // TODO change this to a setter, remove tear-off by moving take list into the takestudioview class
   // custom getter/setter in case implementation is changed, as well as tear-off
-  void setViewing(int currVideo) {
-    assert (currVideo >= -1 && currVideo < takes.length);
+  void setViewing(int index) {
+    assert (index >= -1 && index < takes.length);
 
     setState(() {
-      this.currVideo = currVideo;
+      currVideo = index;
     });
   }
   int getViewing() {
     return currVideo;
   }
 
-  // for tear-off
-  void addTake(XFile video) {
-    // add a placeholder tile to the takes list
-    setState(() {
-      takes.add(null);
-    });
+  // make a Take object
+  Future<Take> createTake(XFile video) async {
     // save the XFile
     final path = newVideoPath();
-    video.saveTo(path)
-    ..then((void _) {
-      // make a new Take
-      final newTake = Take(file: File(path));
-      // add to the list replacing placeholder
-      setState(() {
-        takes.last = newTake;
-      });
-    })
-    ..catchError((error, stackTrace) {
-      throw Exception('Error saving video: $error');
-    });
+    await video.saveTo(path);
+    final newTake = Take(file: File(path));
+    return newTake;
+  }
+
+  // for tear-off
+  void addTake(XFile video) {
+    final int index = takes.length; // index at which this video is saved in takeFutures
+    // add to both takeFutures and takes
+    takeFutures.add(createTake(video)
+      ..then((take) {
+        takes.insert(index, take);
+      })
+      ..catchError((error, stackTrace) {
+        throw Exception('Error saving video: $error');
+      })
+    );
+    setState(() {});
   }
   void delTake(int index) {
     // delete the take's corresponding file
@@ -82,6 +88,7 @@ class _TakeStudioViewState extends State<TakeStudioView> {
     // remove from the list
     setState(() {
       takes.removeAt(index);
+      takeFutures.removeAt(index);
       if (index >= takes.length) {
         currVideo = -1;
       }
@@ -104,13 +111,17 @@ class _TakeStudioViewState extends State<TakeStudioView> {
                 (-1) => RecordWidget(
                   addTake: addTake,
                 ),
-                (>= 0) => PlayTakeWidget(),
+                (>= 0) => PlayTakeWidget(
+                  take: takes[getViewing()],
+                  removeTake: () => delTake(getViewing()),
+                ),
                 (_) => const Text('Video ID error'),
               }
           ),
           TakesList(
             height: 100,
             itemWidth: 100,
+            takeFutures: takeFutures,
             takes: takes,
             setView: setViewing,
             getView: getViewing,
@@ -125,13 +136,16 @@ class _TakeStudioViewState extends State<TakeStudioView> {
 }
 
 // current implementation: one row, any height, fills width
+// this really should have been implemented as a RadioList. oh well.
+// TODO this should be declared inside of TakeStudioView to reduce prop drilling. or be passed the state object, once TakeStudioView is a StatelessWidget.
 class TakesList extends StatefulWidget {
-  const TakesList({super.key, required this.height, required this.itemWidth, required this.takes, required this.setView, required this.getView});
+  const TakesList({super.key, required this.height, required this.itemWidth, required this.takeFutures, required this.takes, required this.setView, required this.getView});
 
   final double height;
   final double itemWidth;
 
   // prop drilling
+  final List takeFutures;
   final List takes;
   final void Function(int currVideo) setView;
   final int Function() getView;
@@ -152,51 +166,67 @@ class _TakesListState extends State<TakesList> {
           scrollDirection: Axis.horizontal,
           padding: const EdgeInsets.symmetric(horizontal: 16),
           separatorBuilder: (context, i) => const SizedBox(width: 14,),
-          itemCount: widget.takes.length + 1,
+          itemCount: widget.takeFutures.length + 1,
           itemBuilder: (context, i) {
-            if (i == widget.takes.length) { // add button
+            if (i == widget.takeFutures.length) { // record new button
               return ButtonWithActive(
                 onPressed: () {widget.setView(-1);},
-                itemWidth: widget.itemWidth,
+                length: widget.itemWidth,
                 active: widget.getView() == -1,
                 child: const Icon(Icons.camera_alt_outlined),
               );
             } else { // previous video button
-              return switch (widget.takes[i]) {
-                null => ButtonWithActive(
-                  onPressed: null,
-                  itemWidth: widget.itemWidth,
-                  active: false,
-                  child: SizedBox(
-                    height: widget.height,
-                    width: widget.itemWidth,
-                    child: const CircularProgressIndicator(),
-                  )
-                ),
-                _ => FutureBuilder( // display video thumbnail, or placeholder
-                  future: widget.takes[i].thumbnailFuture,
-                  builder: (context, AsyncSnapshot<Uint8List> snapshot) {
-                    Widget thumbnail;
-                    if (snapshot.hasData) {
-                      thumbnail = Image.memory(snapshot.data!);
-                    } else if (snapshot.hasError) {
-                      thumbnail = const Icon(Icons.image_not_supported_outlined);
-                    } else {
-                      thumbnail = const Icon(Icons.play_arrow_outlined);
-                    }
-                    return ButtonWithActive(
-                      onPressed: () {widget.setView(i);},
-                      itemWidth: widget.itemWidth,
-                      active: widget.getView() == i,
-                      child: SizedBox(
-                        height: widget.height,
-                        width: widget.itemWidth,
-                        child: thumbnail,
+              return FutureBuilder( // display take, or take is loading
+                future: widget.takeFutures[i],
+                builder: (context, AsyncSnapshot<Take> takeSnapshot) => takeSnapshot.hasData
+                  ? FutureBuilder( // video saved; display video thumbnail once loaded
+                      future: takeSnapshot.data!.thumbnailFuture,
+                      builder: (context, AsyncSnapshot<Uint8List> thumbnailSnapshot) {
+                        Widget thumbnail;
+                        if (thumbnailSnapshot.hasData) { 
+                          thumbnail = LayoutBuilder( // make sure it fills up the whole button
+                            builder: (context, constraints) {
+                              return OverflowBox(
+                                minWidth: constraints.maxWidth,
+                                minHeight: constraints.maxHeight,
+                                maxWidth: double.infinity,
+                                maxHeight: double.infinity,
+                                alignment: Alignment.center,
+                                child: Image.memory(thumbnailSnapshot.data!),
+                              );
+                            }
+                          );
+                        } else if (thumbnailSnapshot.hasError) {
+                          thumbnail = const Icon(Icons.broken_image_outlined);
+                        } else { // thumbnail not yet created
+                          thumbnail = const Icon(Icons.video_file);
+                        }
+                        return ButtonWithActive(
+                          onPressed: () {widget.setView(i);},
+                          length: widget.itemWidth,
+                          active: widget.getView() == i,
+                          child: SizedBox(
+                            height: widget.height,
+                            width: widget.itemWidth,
+                            child: thumbnail,
+                          )
+                        );
+                      }
+                    )
+                  : (takeSnapshot.hasError) // no video available: error or loading?
+                    ? ButtonWithActive( // display error icon
+                        onPressed: null,
+                        length: widget.itemWidth,
+                        active: false,
+                        child: const Icon(Icons.error),
                       )
-                    );
-                  }
-                ),
-              };
+                    : ButtonWithActive( // display loader until video is saved
+                      onPressed: null,
+                      length: widget.itemWidth,
+                      active: false,
+                      child: const CircularProgressIndicator(),
+                      )
+              );
             }
           },
         ),
@@ -205,49 +235,52 @@ class _TakesListState extends State<TakesList> {
   }
 }
 
+/// A equivalent to RadioButton; a button with the ability to be currently selected.
 class ButtonWithActive extends ElevatedButton {
+  /// Creates a ButtonWithActive.
   const ButtonWithActive({
     super.key,
     required super.onPressed,
     required super.child,
     required this.active,
-    required this.itemWidth,
+    required this.length,
   });
 
+  /// Whether this button is the selected one.
   final bool active;
-  final double itemWidth;
+  /// The length of one side of this square button.
+  final double length;
 
   @override
   State<ButtonWithActive> createState() => _ButtonWithActiveState();
 }
 
 class _ButtonWithActiveState extends State<ButtonWithActive> {
-
-  static final shape = RoundedRectangleBorder(
-    borderRadius: BorderRadius.circular(12.0),
-  );
-
   @override
   Widget build(BuildContext context) {
-    if (widget.active) {
-      return ElevatedButton(
-        style: ElevatedButton.styleFrom(
-          shape: shape,
-          side: BorderSide(color: Theme.of(context).colorScheme.surface),
-          fixedSize: Size.fromWidth(widget.itemWidth),
+
+    final childWithWrappers = Center(
+      child: widget.child,
+    );
+
+    return ElevatedButton(
+      clipBehavior: Clip.antiAlias,
+      style: ElevatedButton.styleFrom(
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(.1 * widget.length),
         ),
-        onPressed: widget.onPressed,
-        child: widget.child,
-      );
-    } else {
-      return OutlinedButton (
-        style: OutlinedButton.styleFrom(
-          shape: shape,
-          fixedSize: Size.fromWidth(widget.itemWidth),
-        ),
-        onPressed: widget.onPressed,
-        child: widget.child,
-      );
-    }
+        padding: EdgeInsets.zero,
+        side: switch (widget.active) {
+          true => BorderSide(
+            width: 3,
+            color: Theme.of(context).colorScheme.outline,
+          ),
+          false => BorderSide.none,
+        },
+        fixedSize: Size.fromWidth(widget.length),
+      ),
+      onPressed: widget.onPressed,
+      child: childWithWrappers,
+    );
   }
 }
